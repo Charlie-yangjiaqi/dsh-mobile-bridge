@@ -12,9 +12,34 @@ const TOKEN = 'testtoken-0123456789'
 const handlers = new Map()
 let disposer = null
 
+/** 假网关：记录调用形状，供配对审批链路的单测用。 */
+const gatewayCalls = []
+const fakeGateway = {
+  async invoke(request) {
+    gatewayCalls.push(request)
+    if (request.method === 'pairingRequests') {
+      return {
+        requests: [
+          { id: 'req-1', code: 'ABCD2345', authority: 'https://x', sourceIp: '10.0.0.2', expiresInMs: 120000 },
+        ],
+        pollIntervalMs: 2000,
+      }
+    }
+    if (request.method === 'decidePairing') return 'approved'
+    return undefined
+  },
+}
+
 const ctx = {
   webServer: { port: 7999 },
-  connection: { trustedHosts: [], browserAuth: null },
+  connection: {
+    trustedHosts: [],
+    browserAuth: null,
+    createPeer(options) {
+      return { id: 'peer-owner', principal: options?.principal, disposed: false }
+    },
+  },
+  typertGateway: fakeGateway,
   on(name, fn) {
     handlers.set(name, fn)
     return () => handlers.delete(name)
@@ -133,11 +158,40 @@ async function main() {
   const wrong = await request(`/events?token=wrong`, { host: PUBLIC_HOST })
   check('错误 token → 401', wrong.status === 401, String(wrong.status))
 
-  // 8. /auth/url：无 token 401；有 token 但没有 connection 服务 → 503
+  // 8. /auth/url：无 token 401；有 token 时——宿主不给 browserAuth 也能自签，
+  //    只有在读不到持久密钥的机器上才回 503（CI 就是这种机器）。
   check('/auth/url 无 token → 401', (await request('/auth/url', { host: PUBLIC_HOST })).status === 401)
-  check('/auth/url 无 browserAuth → 503', (await request(`/auth/url?token=${TOKEN}`, { host: PUBLIC_HOST })).status === 503)
+  const authUrl = await request(`/auth/url?token=${TOKEN}&base=http://dsh.example.com:3398/`, { host: PUBLIC_HOST })
+  const selfSigned = authUrl.status === 200 && /"cookie":"dsh-auth-/.test(authUrl.body)
+  check('/auth/url 自签 cookie 或降级 503', selfSigned || authUrl.status === 503, String(authUrl.status))
 
-  // 9. 非法 Host 不再崩进程
+  // 9. 配对审批接口：网关可用时按 owner 身份读列表与批准
+  check('/pairing/list 无 token → 401', (await request('/pairing/list', { host: PUBLIC_HOST })).status === 401)
+  const pairingList = await request(`/pairing/list?token=${TOKEN}`, { host: PUBLIC_HOST })
+  const pairingBody = JSON.parse(pairingList.body || '{}')
+  check('/pairing/list 返回待批准申请',
+    pairingList.status === 200 && pairingBody.ok === true && pairingBody.requests.length === 1
+      && pairingBody.requests[0].code === 'ABCD2345',
+    pairingList.body.slice(0, 90))
+  const listCall = gatewayCalls.find((call) => call.method === 'pairingRequests')
+  check('/pairing/list 走 remoteConnection 命名空间且用 owner peer',
+    Boolean(listCall) && listCall.namespace === 'remoteConnection'
+      && listCall.peer?.principal?.kind === 'owner', JSON.stringify(listCall?.namespace ?? null))
+
+  const decide = await request(`/pairing/decide?id=req-1&decision=allow`, {
+    host: PUBLIC_HOST,
+    'x-dsh-token': TOKEN,
+  })
+  const decideBody = JSON.parse(decide.body || '{}')
+  check('/pairing/decide 批准成功', decide.status === 200 && decideBody.ok === true && decideBody.result === 'approved',
+    decide.body.slice(0, 90))
+  const decideCall = gatewayCalls.find((call) => call.method === 'decidePairing')
+  check('/pairing/decide 参数正确', Boolean(decideCall) && decideCall.args?.id === 'req-1'
+    && decideCall.args?.decision === 'allow', JSON.stringify(decideCall?.args ?? null))
+  check('/pairing/decide 拒绝非法 decision',
+    (await request(`/pairing/decide?id=req-1&decision=maybe`, { host: PUBLIC_HOST, 'x-dsh-token': TOKEN })).status === 400)
+
+  // 10. 非法 Host 不再崩进程
   const badHost = await request('/', { host: 'bad host with spaces' })
   check('非法 Host → 400 而不是崩溃', badHost.status === 400, String(badHost.status))
   const stillAlive = JSON.parse((await request('/health')).body)

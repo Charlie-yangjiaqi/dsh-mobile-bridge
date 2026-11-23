@@ -106,12 +106,27 @@ dsh plugin --profile desktop add -w C:\Users\user\Desktop\dshremote\bridge
 
 - `GET /health` —— 不需要 token，返回版本、在线客户端数、会话数、反代端口。
 - `GET /events?afterSeq=<seq>`（推荐，头里带 `X-DSH-Token`）—— 拉取 `seq` 之后的事件，响应里带 `latestSeq`；`?token=` 与 `since=<毫秒>` 仍兼容但已弃用。
+- `GET /auth/url` / `GET /auth/cookie?base=<手机要访问的地址>` —— 签发免登录地址或 owner 浏览器 cookie，手机 WebView 打开一次即可长期有效。
+- `GET /pairing/list` —— 宿主「远程连接」里待批准的配对申请（`{requests:[{id,code,sourceIp,expiresInMs}],pollIntervalMs}`）。
+- `GET /pairing/decide?id=<id>&decision=allow|deny` —— 批准或拒绝一条申请（需要 `X-DSH-Token`，或本机面板带 `X-DSH-Panel: 1`）。
+
+## 配对审批（桌面版没有的那块 UI）
+
+DSH 桌面端的 `@deepseek-ai/dsh-client-remote-connection` 在 `if ('dshDesktop' in globalThis)` 处直接
+`return`，所以桌面应用里既没有「设置 → 远程连接」页，也没有批准按钮。别的设备在 DSH 登录页点
+「配对此设备」后，就永远卡在「正在等待批准…」。
+
+本插件把这块补上：宿主侧的 `remoteConnection` 服务仍在运行，桥以 owner 身份通过 typert 网关调
+`remoteConnection/pairingRequests` 与 `remoteConnection/decidePairing`，把待批准列表和批准动作
+暴露成上面两个 HTTP 接口；`client.js` 在「手机遥控 DSH」浮层里每 2.5 秒轮询一次并渲染成带
+「批准 / 拒绝」的橙色区块。所以在**桌面版自己的面板里**就能完成审批，不需要另开浏览器。
 
 ## 安全说明
 
 - token 一律走 `X-DSH-Token`（或 `Authorization: Bearer`）请求头；`?token=` 只为老客户端兼容保留，会进代理日志，**不要用**。
 - 二维码里不再有 token：0.2.1 起是 `v=2` 的一次性配对码（60 秒、单次、换完即废），手机扫到后调 `POST/GET /pair/claim` 换回 token。
-- `/pair`、`/pair.svg`、`/pair.html`、`/pair/test`、`/pair/claim`、`/repair`、`/ai-fix`、`/public` 全部要求 token；`/ai-fix` 还要求请求来自回环地址（否则 403），并对每个来源限流。
+- `/pair`、`/pair.svg`、`/pair.html`、`/pair/test`、`/pair/claim`、`/pairing/list`、`/pairing/decide`、`/repair`、`/ai-fix`、`/public` 全部要求 token；`/ai-fix` 还要求请求来自回环地址（否则 403），并对每个来源限流。
+- `/pairing/decide` 额外接受「回环地址 + `X-DSH-Panel: 1` 自定义头 + 允许的 Origin」这一组证据：自定义头让普通表单 / `<img>` 触发不了（跨源还要先过 CORS 预检，而白名单只放行 `dsh-app://` 与 `127.0.0.1`），所以既方便了桌面面板，又不给 CSRF 留口子。
 - UDP 发现广播里**不含 token**，默认关闭（`discovery: false`），只用来告诉手机「电脑在哪」。
 - 默认 `bind 0.0.0.0` 只适合**可信局域网**；要跨网请走 Cloudflare Tunnel，并把 ingress 指到 `127.0.0.1:3088`，不要直接把 3088 暴露公网。
 - 反代是裸 TCP 透传，不解析内容；DSH Web 自己的鉴权仍然生效。

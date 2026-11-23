@@ -69,6 +69,33 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** 读宿主里待批准的配对申请（桌面版没有「远程连接」设置页，由桥代读）。 */
+    async function loadPendingPairing(root) {
+      try {
+        const response = await fetch(`${root}/pairing/list`, { cache: 'no-store' })
+        if (!response.ok) return { requests: [], error: `HTTP ${response.status}` }
+        const body = await response.json()
+        if (!body.ok) return { requests: [], error: body.error ?? 'unavailable' }
+        return { requests: Array.isArray(body.requests) ? body.requests : [], pollIntervalMs: body.pollIntervalMs }
+      } catch (error) {
+        return { requests: [], error: error?.message ?? String(error) }
+      }
+    }
+
+    /** 代用户批准/拒绝一条申请。approve 之后那台设备立刻拿到 owner cookie。 */
+    async function decidePendingPairing(root, id, decision) {
+      try {
+        const response = await fetch(
+          `${root}/pairing/decide?id=${encodeURIComponent(id)}&decision=${decision}`,
+          { cache: 'no-store', headers: { 'x-dsh-panel': '1' } },
+        )
+        const body = await response.json()
+        return { ok: Boolean(body.ok), result: body.result, error: body.error }
+      } catch (error) {
+        return { ok: false, error: error?.message ?? String(error) }
+      }
+    }
+
     /** 体检通过后才取二维码。 */
     async function loadPairing(root) {
       try {
@@ -165,6 +192,8 @@ window.__ModuleLoader__.load({
       const [attempt, setAttempt] = React.useState(0)
       const [busy, setBusy] = React.useState('')
       const [notice, setNotice] = React.useState(null)
+      const [pending, setPending] = React.useState({ requests: [], error: '' })
+      const [deciding, setDeciding] = React.useState('')
 
       React.useEffect(() => {
         if (!isOpen) {
@@ -204,6 +233,31 @@ window.__ModuleLoader__.load({
         return () => { alive = false; clearInterval(timer) }
       }, [isOpen, state.phase, state.diag])
 
+      // 配对申请轮询：别的设备点「配对此设备」后会出现在这里，批准即放行。
+      // 注意它不依赖体检是否通过——体检失败时照样要能批准，否则那台设备就一直卡在"等待批准"。
+      React.useEffect(() => {
+        if (!isOpen) return undefined
+        let alive = true
+        let timer = null
+        let cachedRoot = ''
+        const tick = async () => {
+          let root = `${state.diag?.base ?? ''}${state.diag?.prefix ?? ''}` || cachedRoot
+          if (!root) {
+            const resolved = await resolveBase()
+            if (!alive) return
+            root = `${resolved.base}${resolved.prefix}`
+          }
+          if (!root) return
+          cachedRoot = root
+          const result = await loadPendingPairing(root)
+          if (!alive) return
+          setPending({ ...result, root })
+        }
+        void tick()
+        timer = setInterval(tick, 2500)
+        return () => { alive = false; if (timer) clearInterval(timer) }
+      }, [isOpen, state.phase, state.diag])
+
       if (!isOpen) return null
 
       const diag = state.diag ?? null
@@ -215,6 +269,30 @@ window.__ModuleLoader__.load({
       const origin = typeof window !== 'undefined' ? window.location.origin : ''
 
       const rootOf = (value) => `${value?.base ?? ''}${value?.prefix ?? ''}`
+
+      // 批准 / 拒绝一台正在申请配对的设备。
+      const decide = async (request, decision) => {
+        setDeciding(request.id)
+        try {
+          const result = await decidePendingPairing(pending.root || rootOf(diag), request.id, decision)
+          if (result.ok) {
+            setNotice({
+              ok: true,
+              text: decision === 'allow'
+                ? `已批准 ${request.code}：那台设备会自己登录进 DSH。`
+                : `已拒绝 ${request.code}。`,
+            })
+          } else if (result.result === 'unavailable') {
+            setNotice({ ok: false, text: '这条申请已经过期或被处理，刷新一下列表。' })
+          } else {
+            setNotice({ ok: false, text: `操作失败：${result.error ?? '未知原因'}` })
+          }
+        } finally {
+          setDeciding('')
+          const refreshed = await loadPendingPairing(pending.root || rootOf(diag))
+          setPending((prev) => ({ ...refreshed, root: prev.root }))
+        }
+      }
 
       // 一键修复：重拉隧道并等到公网可用，再自动重跑体检。
       const repair = async () => {
@@ -327,6 +405,7 @@ window.__ModuleLoader__.load({
           width: 356, maxWidth: '93vw', padding: 22, borderRadius: 16,
           background: '#ffffff', color: '#111827',
           boxShadow: '0 24px 60px rgba(0,0,0,0.35)', fontFamily: 'inherit',
+          maxHeight: '88vh', overflowY: 'auto', boxSizing: 'border-box',
         },
       },
         h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
@@ -355,11 +434,72 @@ window.__ModuleLoader__.load({
             [lan, tunnel].filter(Boolean).join('  |  '))
           : h('div', { style: { marginTop: 4, fontSize: 11, color: '#9ca3af', textAlign: 'center' } },
             `页面来源：${origin}`),
+        pending.requests.length > 0
+          ? h('div', {
+            style: {
+              marginTop: 14, padding: '10px 12px', borderRadius: 10,
+              background: '#fffbeb', border: '1px solid #fcd34d',
+            },
+          },
+            h('div', { style: { fontSize: 12, fontWeight: 600, color: '#92400e' } },
+              `待批准的配对申请 · ${pending.requests.length}`),
+            h('div', { style: { marginTop: 2, fontSize: 11, color: '#b45309', lineHeight: 1.5 } },
+              '对照手机屏幕上的配对码，确认一致再批准。批准后那台设备立即获得完整访问权限。'),
+            ...pending.requests.map((item) => h('div', {
+              key: item.id,
+              style: {
+                marginTop: 8, paddingTop: 8, borderTop: '1px dashed #fcd34d',
+                display: 'flex', alignItems: 'center', gap: 8,
+              },
+            },
+              h('div', { style: { flex: 1, minWidth: 0 } },
+                h('div', {
+                  style: {
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: 15, letterSpacing: 2, color: '#111827',
+                  },
+                }, String(item.code ?? '')), 
+                h('div', { style: { fontSize: 11, color: '#6b7280', wordBreak: 'break-all' } },
+                  [item.sourceIp ? `来源 ${item.sourceIp}` : '来源未知',
+                    typeof item.expiresInMs === 'number' ? `剩 ${Math.max(0, Math.round(item.expiresInMs / 1000))}s` : '']
+                    .filter(Boolean).join(' · ')),
+              ),
+              h('button', {
+                type: 'button',
+                disabled: deciding === item.id,
+                onClick: () => decide(item, 'deny'),
+                style: {
+                  padding: '6px 10px', borderRadius: 8, border: '1px solid #d1d5db',
+                  background: '#fff', color: '#374151', fontSize: 12,
+                  cursor: deciding === item.id ? 'default' : 'pointer',
+                },
+              }, '拒绝'),
+              h('button', {
+                type: 'button',
+                disabled: deciding === item.id,
+                onClick: () => decide(item, 'allow'),
+                style: {
+                  padding: '6px 10px', borderRadius: 8, border: 'none',
+                  background: '#16a34a', color: '#fff', fontSize: 12,
+                  cursor: deciding === item.id ? 'default' : 'pointer',
+                  opacity: deciding === item.id ? 0.6 : 1,
+                },
+              }, deciding === item.id ? '处理中…' : '批准'),
+            )),
+          )
+          : null,
+        pending.error && !/HTTP 40[13]/.test(pending.error)
+          ? h('div', { style: { marginTop: 8, fontSize: 11, color: '#b45309', wordBreak: 'break-all' } },
+            `配对申请读取失败：${pending.error}`)
+          : null,
+        pending.error && /HTTP 40[13]/.test(pending.error) && state.phase === 'ready'
+          ? h('div', { style: { marginTop: 8, fontSize: 11, color: '#9ca3af', lineHeight: 1.5 } },
+            '配对审批只能在电脑上的这个面板里操作（手机端没有权限读取申请列表）。')
+          : null,
         h('div', { style: { marginTop: 14, display: 'flex', gap: 8 } },
           h('button', {
             type: 'button',
-            onClick: () => setAttempt((value) => value + 1),
-            style: {
+            onClick: () => setAttempt((value) => value + 1),            style: {
               flex: 1, padding: '9px 12px', borderRadius: 9, border: '1px solid #d1d5db',
               background: '#f9fafb', color: '#111827', fontSize: 13, cursor: 'pointer',
             },
@@ -406,6 +546,9 @@ window.__ModuleLoader__.load({
         ),
         h('div', { style: { marginTop: 10, fontSize: 11, color: '#9ca3af', lineHeight: 1.5 } },
           '手机 App：没连接过会自动进入扫码页，扫完直接进 DSH；右上角只有设置入口。',
+        ),
+        h('div', { style: { marginTop: 6, fontSize: 11, color: '#9ca3af', lineHeight: 1.5 } },
+          '别的设备在 DSH 登录页点「配对此设备」后，会出现在上方「待批准的配对申请」，核对配对码后点批准即可放行。',
         ),
       ))
 
