@@ -1,0 +1,6 @@
+node_modules/
+*.log
+*.token
+.public
+dijkstrajs*.tgz
+.DS_Store

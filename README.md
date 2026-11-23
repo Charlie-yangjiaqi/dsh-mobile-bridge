@@ -1,0 +1,117 @@
+# dsh-mobile-bridge
+
+DSH 的**电脑端桥插件**：让手机远程控制电脑上的 DSH，跨网络走 cloudflared 隧道。
+
+> 本项目 fork 自 [uchiha086/dshremote](https://github.com/uchiha086/dshremote) 的 `bridge/` 部分（MIT）。
+> 上游只是一个混合仓库（鸿蒙 App + 安卓 App + 电脑端插件），这里只保留**电脑端插件**，
+> 并修复了上游的打包缺陷，便于单独安装和分发。
+
+## 相对上游的改动
+
+| 改动 | 原因 |
+|---|---|
+| 补上 `dijkstrajs` 依赖声明 | 上游 `package.json` 只声明了 `ws`，但 `vendor/qr/core/segments.js` 需要 `dijkstrajs`；缺失会在 import 阶段**静默崩溃**，DSH 只跳过插件、控制台无任何报错，极难排查 |
+| 去掉硬编码的 Tailscale 域名 | 上游 `cordis.patch.yml` 里写死了作者的 `*.ts.net` 地址，别人装会连到作者机器 |
+| 隧道默认 `auto` | 开箱即用，不需要手动跑 cloudflared |
+
+## 安装
+
+```powershell
+dsh plugin --profile desktop add -w <本仓库目录>
+```
+
+**这一步只完成一半**：`dsh plugin add` 会把包 link 进 profile 的 `node_modules`，
+但**不会**写进 `dsh.profile.bundles`，插件永远不会被加载。必须手动编辑
+`~/.dsh/profiles/desktop/package.json`，在 `dsh.profile.bundles` 数组末尾加上包名：
+
+```json
+"dsh.profile.bundles": [ "...", "dshremote-bridge" ]
+```
+
+**然后重启 DSH**（改完配置再重启，否则读不到）。验证：
+
+```bash
+curl http://127.0.0.1:3088/health
+# {"ok":true,"service":"dshremote-bridge","version":"0.2.2",...}
+```
+
+## 跨网络访问
+
+`cordis.patch.yml` 里 `tunnel: auto` 会让插件自己拉起 `cloudflared` 快速隧道，
+地址写在 `~/.dsh/dshremote-bridge.public`。**该地址每次重启会变**；要固定地址，
+需要一个自己的域名走 Cloudflare 命名隧道，把地址填进 `publicUrl` 并把 `tunnel` 改为 `off`。
+
+---
+
+DSH Remote 的**电脑端桥插件**。它做两件事：
+
+1. 监听 DSH 宿主的会话事件，在每个**回合结束**时通过 WebSocket 推送一条 `turn_end` 给手机；
+2. 把只监听 `127.0.0.1` 的 DSH Web 用裸 TCP 反代到局域网端口，手机浏览器/WebView 才能打开。
+
+手机端不需要理解 DSH 协议，只认这里定义的几十行帧格式。
+
+## 安装
+
+```powershell
+# 用 DSH 自带的插件管理器（本地目录会被 link，不复制）
+dsh plugin --profile desktop add -w C:\Users\user\Desktop\dshremote\bridge
+```
+
+装完**重启 Desktop** 生效。启动日志与 token 位置：
+
+- 日志：`~/.dsh/dshremote-bridge.log`
+- token：`~/.dsh/dshremote-bridge.token`（首次启动随机生成，权限 0600）
+
+## 配置
+
+改 `cordis.patch.yml` 里的 `config`（同名覆盖会整体替换，不要只写要改的项）：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `port` | `3088` | 宿主端口（WS `/ws`、`/health`、`/events`） |
+| `bind` | `0.0.0.0` | 监听地址；只想本机测就改 `127.0.0.1` |
+| `token` | 空 | 空则每次启动随机生成并写入 token 文件 |
+| `proxyEnabled` | `true` | 是否启动 DSH Web 反代 |
+| `proxyPort` | `7627` | 反代对外端口 |
+| `upstreamHost` / `upstreamPort` | `127.0.0.1` / `7626` | DSH Web 实际地址 |
+| `answerHeadChars` | `120` | 推送里带多少字回复摘要 |
+| `questionChars` | `200` | 推送里带多少字提问 |
+| `logFile` | 空 | 空则用 `~/.dsh/dshremote-bridge.log` |
+
+## 协议（v1）
+
+握手子协议固定为 `dshremote-bridge-v1`，连接地址 `ws://<电脑IP>:3088/ws`。
+
+客户端 → 服务端：
+
+```json
+{"type":"auth","token":"<token>","deviceName":"HOP-AL10"}
+{"type":"ping"}
+{"type":"ack","id":"turn-<session>-<seq>"}
+```
+
+服务端 → 客户端：
+
+```json
+{"type":"hello","protocol":1,"bridgeVersion":"0.1.0","host":"DESKTOP","now":1763...,"proxyPort":7627}
+{"type":"turn_end","id":"...","ts":1763...,"sessionId":"...","sessionTitle":"...",
+ "question":"用户最后一句","answerHead":"回复前 120 字","status":"done|failed|cancelled","turn":3,"seq":42}
+{"type":"pong","ts":1763...}
+{"type":"error","code":"bad-token|not-authenticated|auth-timeout"}
+```
+
+`status` 由宿主 `turn/end` 的 `reason.kind` 归一而来：含 `error/fail` → `failed`，含 `interrupt/cancel/abort/stop/user` → `cancelled`，其余 → `done`。
+
+## HTTP 调试接口
+
+- `GET /health` —— 不需要 token，返回版本、在线客户端数、会话数、反代端口。
+- `GET /events?afterSeq=<seq>`（推荐，头里带 `X-DSH-Token`）—— 拉取 `seq` 之后的事件，响应里带 `latestSeq`；`?token=` 与 `since=<毫秒>` 仍兼容但已弃用。
+
+## 安全说明
+
+- token 一律走 `X-DSH-Token`（或 `Authorization: Bearer`）请求头；`?token=` 只为老客户端兼容保留，会进代理日志，**不要用**。
+- 二维码里不再有 token：0.2.1 起是 `v=2` 的一次性配对码（60 秒、单次、换完即废），手机扫到后调 `POST/GET /pair/claim` 换回 token。
+- `/pair`、`/pair.svg`、`/pair.html`、`/pair/test`、`/pair/claim`、`/repair`、`/ai-fix`、`/public` 全部要求 token；`/ai-fix` 还要求请求来自回环地址（否则 403），并对每个来源限流。
+- UDP 发现广播里**不含 token**，默认关闭（`discovery: false`），只用来告诉手机「电脑在哪」。
+- 默认 `bind 0.0.0.0` 只适合**可信局域网**；要跨网请走 Cloudflare Tunnel，并把 ingress 指到 `127.0.0.1:3088`，不要直接把 3088 暴露公网。
+- 反代是裸 TCP 透传，不解析内容；DSH Web 自己的鉴权仍然生效。

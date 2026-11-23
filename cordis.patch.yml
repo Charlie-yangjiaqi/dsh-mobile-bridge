@@ -1,0 +1,49 @@
+# dshremote-bridge：DSH Remote 的电脑端桥插件。
+# 用 `dsh plugin --profile desktop add -w <本目录>` 或 plugin_manager 的 install_bundle 装入后，
+# 由 profile 的 cordis 加载；同名覆盖会整体替换 config，改配置请直接改这里。
+- insert:
+    - id: dshremote-bridge
+      name: dshremote-bridge
+      config:
+        enabled: true
+
+        # 手机连的桥端口（局域网 http://<电脑IP>:3088）。
+        port: 3088
+        bind: 0.0.0.0
+
+        # 为空则沿用 ~/.dsh/dshremote-bridge.token；这个值重启后不会变，手机配一次就行。
+        token: ''
+
+        # DSH Web 只监听回环，这里由桥在 7627 上做一层反向代理给手机用。
+        proxyEnabled: true
+        proxyPort: 7627
+        upstreamHost: 127.0.0.1
+        upstreamPort: 62754
+
+        # 通知正文长度。
+        answerHeadChars: 120
+        questionChars: 200
+
+        # 空 = ~/.dsh/dshremote-bridge.log
+        logFile: ''
+
+        # 固定公网地址：Tailscale Funnel 给的 https://<电脑名>.<tailnet>.ts.net
+        # 配合下面的 tunnel: off 使用：不再拉 cloudflared 快速隧道，地址永久不变。
+        publicUrl: ''
+        publicUrlFile: ''
+
+        # 额外的可信 host（公网域名），会被塞进 DSH 的 trustedHosts，否则公网访问 403。
+        extraHosts: []
+        hostsFile: ''
+
+        # 局域网自动发现：每 2 秒向 255.255.255.255:3089 广播「我是谁、在哪、端口」，
+        # 手机 App 监听同一端口就能免手填直连。不想暴露就设成 false。
+        discovery: true
+        discoveryPort: 3089
+
+        # 隧道：
+        #   auto = 由桥自己拉起 cloudflared 快速隧道（地址每次变，进程挂了自动重启）
+        #   off  = 不自动起（配合上面的 publicUrl 用固定地址，如 Tailscale Funnel）
+        tunnel: auto
+        cloudflaredPath: 'C:\Users\Yanak\Documents\deepseek-harness\default-workspace\tools\cloudflared.exe'
+        tunnelProtocol: http2
