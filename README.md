@@ -11,35 +11,52 @@ DSH 的**电脑端桥插件**：让手机远程控制电脑上的 DSH，跨网�
 | 改动 | 原因 |
 |---|---|
 | 补上 `dijkstrajs` 依赖声明 | 上游 `package.json` 只声明了 `ws`，但 `vendor/qr/core/segments.js` 需要 `dijkstrajs`；缺失会在 import 阶段**静默崩溃**，DSH 只跳过插件、控制台无任何报错，极难排查 |
+| `files` 补上 `vendor` | 上游没列 `vendor`，从 npm/GitHub 装下来整个二维码实现会丢，`lib/qr.mjs` 的 `require` 直接抛错、扫码功能全废 |
 | 去掉硬编码的 Tailscale 域名 | 上游 `cordis.patch.yml` 里写死了作者的 `*.ts.net` 地址，别人装会连到作者机器 |
+| 去掉写死的 `cloudflaredPath` | 上游配置里是本机绝对路径，别人机器上必然找不到；改成自动探测（见下） |
 | 隧道默认 `auto` | 开箱即用，不需要手动跑 cloudflared |
 
 ## 安装
 
+一条命令（会自动写进 `dsh.profile.bundles`，不需要手改配置）：
+
 ```powershell
-dsh plugin --profile desktop add -w <本仓库目录>
+dsh plugin --profile desktop add github:Charlie-yangjiaqi/dsh-mobile-bridge
 ```
 
-**这一步只完成一半**：`dsh plugin add` 会把包 link 进 profile 的 `node_modules`，
-但**不会**写进 `dsh.profile.bundles`，插件永远不会被加载。必须手动编辑
-`~/.dsh/profiles/desktop/package.json`，在 `dsh.profile.bundles` 数组末尾加上包名：
-
-```json
-"dsh.profile.bundles": [ "...", "dshremote-bridge" ]
-```
-
-**然后重启 DSH**（改完配置再重启，否则读不到）。验证：
+装完**重启 DSH**。验证：
 
 ```bash
 curl http://127.0.0.1:3088/health
-# {"ok":true,"service":"dshremote-bridge","version":"0.2.2",...}
+# {"ok":true,"service":"dshremote-bridge","version":"0.2.4",...}
 ```
+
+> 也可以装本地 checkout：`dsh plugin --profile desktop add -w <本仓库目录>`。
+> 早期版本需要手动把包名加进 `dsh.profile.bundles`，**现在不需要了**——DSH 会自动追加
+> 声明了 `dsh.bundle` 的包（可用 `dsh --profile desktop --dump-config` 确认有 `# == dshremote-bridge` 那层）。
+
+### 依赖：cloudflared（可选）
+
+只有**手机和电脑不在同一网络**时才需要它。插件会自动按下面顺序找：
+
+1. 配置里的 `cloudflaredPath`
+2. 环境变量 `CLOUDFLARED_PATH`
+3. `PATH` 里的 `cloudflared`
+4. 常见安装位置（`C:\Program Files (x86)\cloudflared\` 等）
+
+找不到不会报错，只是没有公网地址、**局域网直连照常可用**，并且日志只提示一次。
 
 ## 跨网络访问
 
 `cordis.patch.yml` 里 `tunnel: auto` 会让插件自己拉起 `cloudflared` 快速隧道，
 地址写在 `~/.dsh/dshremote-bridge.public`。**该地址每次重启会变**；要固定地址，
 需要一个自己的域名走 Cloudflare 命名隧道，把地址填进 `publicUrl` 并把 `tunnel` 改为 `off`。
+
+## 配对审批（桌面版没有的那块 UI）
+
+别人的设备在 DSH 登录页点「配对此设备」后，会在这台电脑的
+**左下角二维码按钮 → 手机遥控 DSH** 面板里显示成待批准列表，点「批准」即可放行；
+不需要打开浏览器、也不需要 DSH 有「设置 → 远程连接」那一页（桌面版没有）。
 
 ---
 

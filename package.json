@@ -29,8 +29,7 @@
     }
   },
   "engines": {
-    "node": ">=24.9",
-    "dsh": ">=0.2.2"
+    "node": ">=24.9"
   },
   "repository": {
     "type": "git",
