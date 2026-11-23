@@ -15,10 +15,11 @@
         token: ''
 
         # DSH Web 只监听回环，这里由桥在 7627 上做一层反向代理给手机用。
+        # upstreamPort 只是兜底：运行时以宿主 webServer 的实际端口为准，不用改。
         proxyEnabled: true
         proxyPort: 7627
         upstreamHost: 127.0.0.1
-        upstreamPort: 62754
+        upstreamPort: 7626
 
         # 通知正文长度。
         answerHeadChars: 120
@@ -43,7 +44,9 @@
 
         # 隧道：
         #   auto = 由桥自己拉起 cloudflared 快速隧道（地址每次变，进程挂了自动重启）
-        #   off  = 不自动起（配合上面的 publicUrl 用固定地址，如 Tailscale Funnel）
+        #   off  = 不自动起（配合上面的 publicUrl 用固定地址，如 Cloudflare 命名隧道）
         tunnel: auto
-        cloudflaredPath: 'C:\Users\Yanak\Documents\deepseek-harness\default-workspace\tools\cloudflared.exe'
+        # 留空自动探测：CLOUDFLARED_PATH 环境变量 → PATH → 常见安装位置。
+        # 没装 cloudflared 就不会有公网地址，局域网直连照常可用。
+        cloudflaredPath: ''
         tunnelProtocol: http2
