@@ -1,0 +1,51 @@
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.1.1(24)",
+        "compatibleSdkVersion": "6.1.0(23)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ],
+
+    // 签名配置不写进仓库。
+    //
+    // 在 DevEco Studio 里打开本项目 → File → Project Structure → Signing Configs
+    // → 勾选「Automatically generate signature」，用你自己的华为账号登录即可生成，
+    // 它会写回本文件（含明文密码），所以这里提交的是不含 signingConfigs 的干净版本。
+    //
+    // 命令行构建时若没有签名配置，只会产出未签名 HAP（构建仍然成功），
+    // 装到真机需要签名，因此出包请用 DevEco。
+    "signingConfigs": []
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

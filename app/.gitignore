@@ -1,0 +1,27 @@
+# 鸿蒙 / DevEco 构建产物
+/build
+/.hvigor
+/oh_modules
+/.idea
+/local.properties
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+**/build
+
+# 签名材料：绝不能进仓库
+*.p12
+*.cer
+*.p7b
+*.csr
+*.keystore
+.sign/
+
+# 本机签名配置：build-profile.json5 里含明文 keyPassword / storePassword，
+# 每次 DevEco 自动签名都会写回。仓库里只放不含 signingConfigs 的干净版本，
+# 本机编译前从 build-profile.json5.bak 还原，或用 DevEco 重新自动签名。
+/build-profile.json5.bak
+*.local.json5

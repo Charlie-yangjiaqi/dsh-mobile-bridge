@@ -1,10 +1,22 @@
 # dsh-mobile-bridge
 
-DSH 的**电脑端桥插件**：让手机远程控制电脑上的 DSH，跨网络走 cloudflared 隧道。
+让手机远程控制电脑上的 DSH：**电脑端桥插件 + 鸿蒙客户端**。
 
-> 本项目 fork 自 [uchiha086/dshremote](https://github.com/uchiha086/dshremote) 的 `bridge/` 部分（MIT）。
-> 上游只是一个混合仓库（鸿蒙 App + 安卓 App + 电脑端插件），这里只保留**电脑端插件**，
-> 并修复了上游的打包缺陷，便于单独安装和分发。
+> 本项目 fork 自 [uchiha086/dshremote](https://github.com/uchiha086/dshremote)（MIT）。
+> 上游是混合仓库（鸿蒙 App + 安卓 App + 电脑端插件），这里保留**电脑端插件**（仓库根目录）
+> 与**鸿蒙客户端**（[`app/`](app/)），并修复了上游的打包缺陷，便于单独安装和分发。
+
+## 两个部分
+
+| 目录 | 是什么 | 装在哪 |
+|---|---|---|
+| 仓库根目录 | **电脑端桥插件**（`dshremote-bridge`） | 装进 DSH，提供配对二维码与反代 |
+| [`app/`](app/) | **鸿蒙客户端**（DSH 控制台） | 装手机，扫码连电脑 |
+
+**两者缺一不可**：电脑端装了插件才出二维码，手机端装了 App 才能扫码。
+
+- 电脑端安装见下方[安装](#安装)
+- 手机端编译见 [`app/README.md`](app/README.md)
 
 ## 相对上游的改动
 
