@@ -69,30 +69,70 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 读宿主里待批准的配对申请（桌面版没有「远程连接」设置页，由桥代读）。 */
+    /**
+     * 直连宿主的远程调用通道（/api 上的 client-request 信封）。
+     *
+     * 面板在桌面端是 dsh-app://app 来源，同源相对路径会被协议处理器带着 owner cookie
+     * 转发给 Host，所以这里天然有 owner 身份——不用桥代转，也就不必等插件重启。
+     */
+    let rpcSeq = 0
+    async function hostRpc(method, args) {
+      const rpcId = `bridge-panel-${Date.now()}-${++rpcSeq}`
+      const response = await fetch(`/api/${method}`, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const envelope = await response.json()
+      const result = envelope?.result
+      if (!result || result.ok !== true) {
+        throw new Error(result?.error?.message ?? 'rpc-failed')
+      }
+      return result.value
+    }
+
+    /** 读宿主里待批准的配对申请（桌面版没有「远程连接」设置页，由面板直接问 Host）。 */
     async function loadPendingPairing(root) {
       try {
-        const response = await fetch(`${root}/pairing/list`, { cache: 'no-store' })
-        if (!response.ok) return { requests: [], error: `HTTP ${response.status}` }
-        const body = await response.json()
-        if (!body.ok) return { requests: [], error: body.error ?? 'unavailable' }
-        return { requests: Array.isArray(body.requests) ? body.requests : [], pollIntervalMs: body.pollIntervalMs }
-      } catch (error) {
-        return { requests: [], error: error?.message ?? String(error) }
+        const value = await hostRpc('remoteConnection/pairingRequests', {})
+        return {
+          requests: Array.isArray(value?.requests) ? value.requests : [],
+          pollIntervalMs: value?.pollIntervalMs,
+        }
+      } catch (rpcError) {
+        // 兜底：宿主没走 /api 通道时（比如非桌面环境），退回桥的 HTTP 接口。
+        if (!root) return { requests: [], error: rpcError?.message ?? String(rpcError) }
+        try {
+          const response = await fetch(`${root}/pairing/list`, { cache: 'no-store' })
+          if (!response.ok) return { requests: [], error: `HTTP ${response.status}` }
+          const body = await response.json()
+          if (!body.ok) return { requests: [], error: body.error ?? 'unavailable' }
+          return { requests: Array.isArray(body.requests) ? body.requests : [], pollIntervalMs: body.pollIntervalMs }
+        } catch (error) {
+          return { requests: [], error: error?.message ?? String(error) }
+        }
       }
     }
 
     /** 代用户批准/拒绝一条申请。approve 之后那台设备立刻拿到 owner cookie。 */
     async function decidePendingPairing(root, id, decision) {
       try {
-        const response = await fetch(
-          `${root}/pairing/decide?id=${encodeURIComponent(id)}&decision=${decision}`,
-          { cache: 'no-store', headers: { 'x-dsh-panel': '1' } },
-        )
-        const body = await response.json()
-        return { ok: Boolean(body.ok), result: body.result, error: body.error }
-      } catch (error) {
-        return { ok: false, error: error?.message ?? String(error) }
+        const value = await hostRpc('remoteConnection/decidePairing', { id, decision })
+        return { ok: value !== 'unavailable', result: value }
+      } catch (rpcError) {
+        if (!root) return { ok: false, error: rpcError?.message ?? String(rpcError) }
+        try {
+          const response = await fetch(
+            `${root}/pairing/decide?id=${encodeURIComponent(id)}&decision=${decision}`,
+            { cache: 'no-store', headers: { 'x-dsh-panel': '1' } },
+          )
+          const body = await response.json()
+          return { ok: Boolean(body.ok), result: body.result, error: body.error }
+        } catch (error) {
+          return { ok: false, error: error?.message ?? String(error) }
+        }
       }
     }
 
@@ -234,28 +274,19 @@ window.__ModuleLoader__.load({
       }, [isOpen, state.phase, state.diag])
 
       // 配对申请轮询：别的设备点「配对此设备」后会出现在这里，批准即放行。
-      // 注意它不依赖体检是否通过——体检失败时照样要能批准，否则那台设备就一直卡在"等待批准"。
+      // 走宿主 /api 的远程调用通道，不依赖体检结果，也不依赖桥的 HTTP 端口。
       React.useEffect(() => {
         if (!isOpen) return undefined
         let alive = true
-        let timer = null
-        let cachedRoot = ''
         const tick = async () => {
-          let root = `${state.diag?.base ?? ''}${state.diag?.prefix ?? ''}` || cachedRoot
-          if (!root) {
-            const resolved = await resolveBase()
-            if (!alive) return
-            root = `${resolved.base}${resolved.prefix}`
-          }
-          if (!root) return
-          cachedRoot = root
+          const root = `${state.diag?.base ?? ''}${state.diag?.prefix ?? ''}`
           const result = await loadPendingPairing(root)
           if (!alive) return
           setPending({ ...result, root })
         }
         void tick()
-        timer = setInterval(tick, 2500)
-        return () => { alive = false; if (timer) clearInterval(timer) }
+        const timer = setInterval(tick, 2500)
+        return () => { alive = false; clearInterval(timer) }
       }, [isOpen, state.phase, state.diag])
 
       if (!isOpen) return null
