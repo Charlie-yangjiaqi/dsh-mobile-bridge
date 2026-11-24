@@ -197,6 +197,33 @@ async function main() {
   const stillAlive = JSON.parse((await request('/health')).body)
   check('非法 Host 之后进程仍存活', stillAlive.ok === true)
 
+  // 11. 面板按钮的鉴权：面板没有 token，只带 X-DSH-Panel: 1
+  //     这两个接口过去只认 X-DSH-Token，导致「一键修复」「让 AI 修」一直是 401 bad-token。
+  const panelRepair = await request('/repair', { host: '127.0.0.1', 'x-dsh-panel': '1', origin: 'dsh-app://app' })
+  check('/repair 接受面板凭据（不再 401 bad-token）',
+    !(panelRepair.status === 401 && JSON.parse(panelRepair.body || '{}').error === 'bad-token'),
+    `${panelRepair.status} ${panelRepair.body.slice(0, 70)}`)
+
+  const panelAiFix = await request('/ai-fix', { host: '127.0.0.1', 'x-dsh-panel': '1', origin: 'dsh-app://app' })
+  check('/ai-fix 接受面板凭据（不再 401 bad-token）',
+    !(panelAiFix.status === 401 && JSON.parse(panelAiFix.body || '{}').error === 'bad-token'),
+    `${panelAiFix.status} ${panelAiFix.body.slice(0, 70)}`)
+
+  // 没有凭据、没有面板头的外部请求仍然要被拒，别为了修面板把门开大
+  const naked = await request('/ai-fix', { host: PUBLIC_HOST })
+  check('/ai-fix 无凭据仍拒绝', naked.status === 401 || naked.status === 403, String(naked.status))
+
+  // 面板头 + 非回环来源必须拒绝（伪造面板头的网页）
+  const spoofed = await request('/ai-fix', { host: PUBLIC_HOST, 'x-dsh-panel': '1', origin: 'https://evil.example.com' })
+  check('/ai-fix 伪造面板头被拒', spoofed.status === 401 || spoofed.status === 403, String(spoofed.status))
+
+  // 12. cloudflared 自动探测：未配置路径时不应抛错，且 tunnelHint 给出人话
+  const probeDiag = JSON.parse((await request('/pair/test')).body || '{}')
+  const tunnelCheck = (probeDiag.checks ?? []).find((item) => item.name === '隧道')
+  check('/pair/test 的隧道项给出可读原因',
+    Boolean(tunnelCheck) && typeof tunnelCheck.detail === 'string' && tunnelCheck.detail.length > 0,
+    tunnelCheck?.detail ?? '(无 detail)')
+
   disposer?.()
   await sleep(200)
 

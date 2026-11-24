@@ -203,6 +203,24 @@ window.__ModuleLoader__.load({
 
     const CHECK_HINTS = ['桥服务', 'DSH 反代', '局域网可达', '隧道 → 桥', '隧道 → DSH']
 
+    /** 与隧道无关、缺了任何一项就真的没法用局域网的那几项。 */
+    const BLOCKING_CHECKS = ['桥服务', 'DSH 反代', '局域网可达']
+
+    /**
+     * 揪出「真正挡住出码」的检查项。
+     *
+     * 隧道相关的两项（隧道 → 桥 / 隧道 → DSH）只影响跨网络，同一 Wi-Fi 下用不到，
+     * 所以它们失败时仍然出码，只在界面上标注「仅局域网」——否则人在电脑边上，
+     * 明明能扫码直连，却因为没装 cloudflared 而一个码都拿不到。
+     */
+    function blockingChecks(diag) {
+      const checks = Array.isArray(diag?.checks) ? diag.checks : []
+      if (checks.length === 0) return ['体检接口没有返回检查项']
+      return checks
+        .filter((check) => BLOCKING_CHECKS.includes(check.name) && !check.ok)
+        .map((check) => `${check.name}：${check.detail ?? '失败'}`)
+    }
+
     function CheckRow({ name, ok, ms, detail }) {
       return h('div', {
         style: {
@@ -244,17 +262,20 @@ window.__ModuleLoader__.load({
         setState({ phase: 'testing' })
         runDiagnostics().then(async (diag) => {
           if (!alive) return
-          if (!diag.ok) {
-            setState({ phase: 'failed', diag })
+          // 隧道只影响「人在外面能不能连」，不该挡住同一 Wi-Fi 的扫码。
+          // 桥服务 / DSH 反代 / 局域网可达 任一项挂了才是真的没戏。
+          const blocking = blockingChecks(diag)
+          if (blocking.length > 0) {
+            setState({ phase: 'failed', diag, blocking })
             return
           }
           const pair = await loadPairing(`${diag.base}${diag.prefix ?? ''}`)
           if (!alive) return
           if (pair.error) {
-            setState({ phase: 'failed', diag, error: pair.error })
+            setState({ phase: 'failed', diag, error: pair.error, blocking })
             return
           }
-          setState({ phase: 'ready', diag, pair })
+          setState({ phase: 'ready', diag, pair, degraded: !diag.ok })
         })
         return () => { alive = false }
       }, [isOpen, attempt])
@@ -330,7 +351,10 @@ window.__ModuleLoader__.load({
         setBusy('repair')
         setNotice({ ok: true, text: '正在重拉隧道，最多等 2 分钟…' })
         try {
-          const response = await fetch(`${rootOf(diag)}/repair`, { cache: 'no-store' })
+          const response = await fetch(`${rootOf(diag)}/repair`, {
+            cache: 'no-store',
+            headers: { 'x-dsh-panel': '1' },
+          })
           const result = await response.json()
           if (result.ok) {
             setNotice({ ok: true, text: `隧道已恢复：${result.tunnel}（${Math.round((result.waitedMs ?? 0) / 1000)}s）` })
@@ -350,7 +374,10 @@ window.__ModuleLoader__.load({
         setBusy('ai')
         setNotice({ ok: true, text: '正在新开一个修复会话…' })
         try {
-          const response = await fetch(`${rootOf(diag)}/ai-fix`, { cache: 'no-store' })
+          const response = await fetch(`${rootOf(diag)}/ai-fix`, {
+            cache: 'no-store',
+            headers: { 'x-dsh-panel': '1' },
+          })
           const result = await response.json()
           if (result.ok) {
             setNotice({ ok: true, text: '已在新会话里开始修复，切到会话列表看最新那条。' })
@@ -407,6 +434,7 @@ window.__ModuleLoader__.load({
           },
         }, '正在测试环境…'))
       } else {
+        const reason = (state.blocking ?? []).join('；')
         qrBox.push(h('div', {
           key: 'qr-blocked',
           style: {
@@ -414,13 +442,15 @@ window.__ModuleLoader__.load({
             color: '#b91c1c', fontSize: 12, textAlign: 'center', lineHeight: 1.5,
             border: '1px dashed #fca5a5', borderRadius: 12, padding: 12, boxSizing: 'border-box',
           },
-        }, '环境没通过测试，先不出码'))
+        }, reason ? `局域网没通，先不出码：${reason}` : '环境没通过测试，先不出码'))
       }
       if (state.phase === 'ready') {
         qrBox.push(h('div', {
           key: 'qr-hint',
           style: { width: 216, marginTop: 8, textAlign: 'center', fontSize: 11, color: '#6b7280', lineHeight: 1.4 },
-        }, '一次性码 60 秒过期，这里每 40 秒自动换新'))
+        }, state.degraded
+          ? '一次性码 60 秒过期 · 当前仅局域网可用（隧道没起来，出门连不上）'
+          : '一次性码 60 秒过期，这里每 40 秒自动换新'))
       }
 
       const panel = h('div', {
