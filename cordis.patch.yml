@@ -28,13 +28,13 @@
         # 空 = ~/.dsh/dshremote-bridge.log
         logFile: ''
 
-        # 固定公网地址：Tailscale Funnel 给的 https://<电脑名>.<tailnet>.ts.net
-        # 配合下面的 tunnel: off 使用：不再拉 cloudflared 快速隧道，地址永久不变。
-        publicUrl: ''
+        # 固定公网地址（Cloudflare 命名隧道，地址永久不变）。
+        publicUrl: 'https://dsh.charlie-dshmobile.xyz'
         publicUrlFile: ''
 
         # 额外的可信 host（公网域名），会被塞进 DSH 的 trustedHosts，否则公网访问 403。
-        extraHosts: []
+        extraHosts:
+          - 'dsh.charlie-dshmobile.xyz'
         hostsFile: ''
 
         # 局域网自动发现：每 2 秒向 255.255.255.255:3089 广播「我是谁、在哪、端口」，
@@ -45,7 +45,8 @@
         # 隧道：
         #   auto = 由桥自己拉起 cloudflared 快速隧道（地址每次变，进程挂了自动重启）
         #   off  = 不自动起（配合上面的 publicUrl 用固定地址，如 Cloudflare 命名隧道）
-        tunnel: auto
+        # 本机已改用命名隧道（~/.cloudflared/config.yml），故设为 off。
+        tunnel: off
         # 留空自动探测：CLOUDFLARED_PATH 环境变量 → PATH → 常见安装位置。
         # 没装 cloudflared 就不会有公网地址，局域网直连照常可用。
         cloudflaredPath: ''
